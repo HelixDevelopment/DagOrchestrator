@@ -1,0 +1,21 @@
+# helix-deps.yaml — DagOrchestrator Submodule-Dependency Manifest
+# Per HelixConstitution §11.4.31 / CONST-054 (Submodule-Dependency-Manifest Mandate).
+#
+# DagOrchestrator (dev.helix.dag) is a standalone, project-not-aware Go module.
+# Its scaffold has ZERO own-org submodule dependencies — the scheduler runs on
+# the Go standard library alone (sync / context). When the consuming project
+# wires it onto the shared scheduling substrate (vasic-digital/Concurrency:
+# worker pool + priority queue + semaphore), that dep is added HERE and the
+# submodule is reached from the consuming project's root per CONST-051(C)
+# (no nested own-org chains).
+#
+# Schema reference: <constitution-submodule>/Constitution.md §11.4.31.
+
+schema_version: 1
+deps: []
+
+transitive_handling:
+  recursive: true
+  conflict_resolution: operator-required
+
+language_specific_subtree: false
