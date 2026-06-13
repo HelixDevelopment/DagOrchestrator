@@ -385,6 +385,25 @@ func taintDependents(states map[string]*nodeState, dependents map[string][]strin
 	}
 }
 
+// runOnce executes a node exactly once, converting a panic in user-supplied
+// Execute into an error. Without this, a panicking node would unwind the worker
+// goroutine: its `defer wg.Done()` fires but the non-deferred semaphore release
+// would be skipped, permanently leaking the worker slot (deadlocking the
+// scheduler at Parallelism:1, and exhausting slots over time at any cap). The
+// semaphore release is deliberately NOT deferred (it must run before the
+// recursive dispatch() so par=1 is safe), so panic-safety is provided here at
+// the execution boundary instead: a panicking node fails its node (honouring
+// FailFast / ContinueOnError) rather than crashing the scheduler.
+func runOnce(ctx context.Context, n Node, in Inputs) (out Output, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out = nil
+			err = fmt.Errorf("dag: node panicked: %v", r)
+		}
+	}()
+	return n.Execute(ctx, in)
+}
+
 // runWithRetry runs a node up to RetryPolicy.MaxAttempts times.
 func runWithRetry(ctx context.Context, n Node, in Inputs, rp RetryPolicy) (Output, error) {
 	var lastErr error
@@ -392,7 +411,7 @@ func runWithRetry(ctx context.Context, n Node, in Inputs, rp RetryPolicy) (Outpu
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		out, err := n.Execute(ctx, in)
+		out, err := runOnce(ctx, n, in)
 		if err == nil {
 			return out, nil
 		}

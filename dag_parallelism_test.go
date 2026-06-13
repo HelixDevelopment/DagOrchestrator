@@ -3,6 +3,7 @@ package dag
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,5 +81,49 @@ func TestParallelismCap_Honored(t *testing.T) {
 	}
 	if peak > cap {
 		t.Fatalf("cap violated: peak %d > Parallelism %d", peak, cap)
+	}
+}
+
+// TestPanickingNode_FailsNotLeaks guards the panic-safety of the worker slot.
+// A node whose Execute panics must be recorded as a node FAILURE (not crash the
+// scheduler), and the run must terminate without deadlocking — even at
+// Parallelism:1 where a leaked slot would block the successor forever.
+//
+// §1.1: removing the recover() in runOnce makes a panicking Execute unwind the
+// worker goroutine, skipping the (non-deferred) slot release → at par=1 the
+// successor's `sem <- struct{}{}` blocks forever and this test times out.
+func TestPanickingNode_FailsNotLeaks(t *testing.T) {
+	nodes := []Node{
+		&FuncNode{NodeID: "boom", Fn: func(ctx context.Context, in Inputs) (Output, error) {
+			panic("intentional node panic")
+		}},
+		&FuncNode{NodeID: "after", Deps: []string{"boom"}, Fn: func(ctx context.Context, in Inputs) (Output, error) {
+			return "after", nil
+		}},
+	}
+	d, err := Build(nodes)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	done := make(chan *Result, 1)
+	go func() {
+		// Parallelism:1 is the case a leaked slot would deadlock.
+		res, _ := NewScheduler().Run(context.Background(), d, Options{Parallelism: 1, Failure: FailFast})
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		boomErr, failed := res.Failed["boom"]
+		if !failed {
+			t.Fatalf("panicking node 'boom' must be recorded as Failed; failed=%v", res.Failed)
+		}
+		if boomErr == nil || !strings.Contains(boomErr.Error(), "panicked") {
+			t.Fatalf("failure must identify the panic, got: %v", boomErr)
+		}
+		if _, ok := res.Outputs["after"]; ok {
+			t.Fatal("'after' must not run (FailFast after its dependency panicked)")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DEADLOCK: a panicking node leaked its worker slot (par=1 starvation)")
 	}
 }
