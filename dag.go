@@ -271,9 +271,15 @@ func (s *scheduler) Run(ctx context.Context, d *DAG, opts Options) (*Result, err
 			}
 			go func(id string, st *nodeState, in Inputs) {
 				defer wg.Done()
-				defer func() { <-sem }()
 
 				out, err := runWithRetry(runCtx, st.node, in, opts.Retry)
+				// Release the execution slot as soon as Execute returns: the
+				// semaphore bounds concurrent node EXECUTION, not the result
+				// bookkeeping + recursive dispatch() below. Holding it through
+				// dispatch() deadlocks at Parallelism:1 — the worker would wait
+				// on a slot it still holds in order to schedule its own
+				// successor. Peak concurrent Execute() stays <= Parallelism.
+				<-sem
 
 				mu.Lock()
 				if err != nil {
